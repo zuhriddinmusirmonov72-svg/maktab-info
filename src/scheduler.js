@@ -1,14 +1,14 @@
 import cron from 'node-cron';
-import { getDatabase } from './database.js';
+import { getDatabase, getSetting, setSetting } from './database.js';
 import { getEnabledSources, updateSourceLastCollected } from './collectors/sourceRegistry.js';
 import { collectFromRss } from './collectors/rssCollector.js';
 import { collectFromWeb } from './collectors/webCollector.js';
 import { isDuplicate, createArticleFingerprint } from './services/duplicateDetector.js';
-import { isRelevant } from './services/relevanceFilter.js';
+import { isRelevant, calculateRelevanceScore } from './services/relevanceFilter.js';
 import { saveArticle, updateArticleStatus } from './services/articleNormalizer.js';
 import { publishReadyArticles } from './services/publisher.js';
 import { isSafeToPublish } from './services/contentSafety.js';
-import { sendPollToChannel } from './services/pollService.js';
+import { sendPollToChannel, shouldSendPoll } from './services/pollService.js';
 import config from './config.js';
 import logger from './logger.js';
 
@@ -23,6 +23,78 @@ let collectionStats = {
   failedRuns: 0,
 };
 
+// ================================================================
+// Bugun nashr qilinganmi tekshirish
+// ================================================================
+function getPublishedCountToday() {
+  const db = getDatabase();
+  if (!db) return 0;
+  const result = db.prepare(
+    `SELECT COUNT(*) as c FROM published_posts WHERE DATE(published_at) = DATE('now')`
+  ).get();
+  return result ? result.c : 0;
+}
+
+// ================================================================
+// Maktab yangiligi bormi tekshirish (READY_TO_PUBLISH da)
+// ================================================================
+function hasSchoolArticleReady() {
+  const db = getDatabase();
+  if (!db) return false;
+  
+  const SCHOOL_KEYWORDS = [
+    'maktab', "o'quvchi", "o'qituvchi", 'sinf', 'imtihon',
+    'ta\'lim', 'ta\'til', 'olimpiada', 'grant', 'stipendiya',
+    'dtm', 'qabul', 'kollej', 'universitet', 'talaba',
+    'мактаб', 'ўқувчи', 'ўқитувчи', 'имтиҳон', 'таълим',
+    'школа', 'ученик', 'учитель', 'образование', 'экзамен',
+  ];
+  
+  const articles = db.prepare(
+    `SELECT title, description FROM articles WHERE status = 'READY_TO_PUBLISH' LIMIT 50`
+  ).all();
+  
+  for (const a of articles) {
+    const text = `${a.title} ${a.description}`.toLowerCase();
+    for (const kw of SCHOOL_KEYWORDS) {
+      if (text.includes(kw.toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+// ================================================================
+// Yoshlar sport yangiligi bormi tekshirish
+// ================================================================
+function hasYouthSportArticleReady() {
+  const db = getDatabase();
+  if (!db) return false;
+  
+  const YOUTH_SPORT_KEYWORDS = [
+    'yosh sportchi', 'yosh chempion', "o'quvchi medal",
+    'yoshlar sport', 'maktab jamoasi', 'yoshlar musobaqasi',
+    'yoshlar olimpiadasi', 'yoshlar chempionati',
+    "o'quvchilar musobaqasi", 'maktablararo',
+    'ёш спортчи', 'ёш чемпион', 'ёшлар спорт',
+    'молодёжный спорт', 'школьные соревнования',
+  ];
+  
+  const articles = db.prepare(
+    `SELECT title, description FROM articles WHERE status = 'READY_TO_PUBLISH' LIMIT 50`
+  ).all();
+  
+  for (const a of articles) {
+    const text = `${a.title} ${a.description}`.toLowerCase();
+    for (const kw of YOUTH_SPORT_KEYWORDS) {
+      if (text.includes(kw.toLowerCase())) return true;
+    }
+  }
+  return false;
+}
+
+// ================================================================
+// Asosiy collection va publish funksiyasi
+// ================================================================
 export async function collectAndProcessArticles() {
   if (isCollecting) {
     logger.warn('Collection already in progress, skipping...');
@@ -32,13 +104,9 @@ export async function collectAndProcessArticles() {
   isCollecting = true;
   collectionStats.totalRuns++;
   const db = getDatabase();
-  
-  // Import at top of function
-  const { calculateRelevanceScore } = await import('./services/relevanceFilter.js');
 
   logger.info('Starting article collection...');
 
-  // Create collection run record
   let runId = null;
   if (db) {
     const stmt = db.prepare('INSERT INTO collection_runs (started_at, status) VALUES (CURRENT_TIMESTAMP, "running")');
@@ -53,7 +121,7 @@ export async function collectAndProcessArticles() {
 
   try {
     const sources = getEnabledSources();
-    
+
     if (sources.length === 0) {
       logger.warn('No enabled sources found');
       isCollecting = false;
@@ -65,9 +133,8 @@ export async function collectAndProcessArticles() {
     for (const source of sources) {
       try {
         logger.info(`Collecting from: ${source.name}`);
-        
+
         let articles = [];
-        
         if (source.type === 'rss') {
           articles = await collectFromRss(source);
         } else if (source.type === 'web') {
@@ -77,17 +144,13 @@ export async function collectAndProcessArticles() {
         totalCollected += articles.length;
         sourcesChecked++;
 
-        // Process each article
         for (const article of articles) {
           try {
-            // Check for duplicates
             if (isDuplicate(article)) {
               totalDuplicate++;
-              logger.debug(`Duplicate article skipped: ${article.title}`);
               continue;
             }
 
-            // Check relevance
             const relevanceScore = calculateRelevanceScore(article);
             if (!isRelevant(article)) {
               logger.info(`Irrelevant article skipped (score: ${relevanceScore}): ${article.title}`);
@@ -95,44 +158,30 @@ export async function collectAndProcessArticles() {
             }
             logger.info(`Relevant article found (score: ${relevanceScore}): ${article.title}`);
 
-            // Safety check
             if (!isSafeToPublish(article)) {
               logger.warn(`Article failed safety check: ${article.title}`);
               continue;
             }
 
-            // Use relevance score from above
             article.relevanceScore = relevanceScore;
 
-            // Save article
-            const articleId = saveArticle({
-              ...article,
-              status: 'VALIDATED',
-            });
+            const articleId = saveArticle({ ...article, status: 'VALIDATED' });
 
             if (articleId) {
               totalNew++;
-              
-              // Create fingerprint for duplicate detection
               createArticleFingerprint(articleId, article.title, article.description);
 
-              // Mark as ready to publish if automated publishing is enabled
               if (config.publishing.enabled) {
                 updateArticleStatus(articleId, 'READY_TO_PUBLISH');
                 logger.info(`Article #${articleId} ready to publish: ${article.title}`);
               }
-            } else {
-              logger.warn(`Failed to save article (may be duplicate or invalid): ${article.title}`);
             }
           } catch (articleError) {
             logger.error(`Failed to process article: ${article.title}`, articleError);
           }
         }
 
-        // Update source last collected timestamp
         updateSourceLastCollected(source.id);
-
-        // Small delay between sources to avoid overwhelming servers
         await new Promise(resolve => setTimeout(resolve, 2000));
       } catch (sourceError) {
         logger.error(`Failed to collect from ${source.name}:`, sourceError);
@@ -141,47 +190,52 @@ export async function collectAndProcessArticles() {
 
     logger.info(`Collection complete: ${totalCollected} collected, ${totalNew} new, ${totalDuplicate} duplicates`);
 
-    // Update collection run
     if (db && runId) {
-      const stmt = db.prepare(`
+      db.prepare(`
         UPDATE collection_runs 
         SET completed_at = CURRENT_TIMESTAMP,
-            sources_checked = ?,
-            articles_collected = ?,
-            articles_new = ?,
-            articles_duplicate = ?,
-            status = 'completed'
+            sources_checked = ?, articles_collected = ?,
+            articles_new = ?, articles_duplicate = ?, status = 'completed'
         WHERE id = ?
-      `);
-      stmt.run(sourcesChecked, totalCollected, totalNew, totalDuplicate, runId);
+      `).run(sourcesChecked, totalCollected, totalNew, totalDuplicate, runId);
     }
 
-    // Publish ready articles if enabled
+    // ============================================================
+    // YANGI NASHR MANTIQ:
+    // 1. Maktab yangiligi bo'lsa — shu kun bitta tashla
+    // 2. Bo'lmasa yoshlar sport bo'lsa — shu kun bitta tashla  
+    // 3. Ikkalasi ham yo'q bo'lsa — bugun tashlama, ertaga tashlaydi
+    // ============================================================
     let publishResult = { published: 0, failed: 0 };
+
     if (config.publishing.enabled) {
-      // Always try to publish, even if no new articles this cycle
-      logger.info('Publishing ready articles...');
-      publishResult = await publishReadyArticles(config.publishing.maxPostsPerRun);
-      if (publishResult.published > 0) {
-        logger.info(`Published ${publishResult.published} articles`);
-      } else {
-        logger.info('No eligible articles to publish this cycle');
-      }
+      const publishedToday = getPublishedCountToday();
       
-      // Check if we should send a poll (3 kunda bir marta)
-      try {
-        const pollResult = await sendPollToChannel();
-        if (pollResult.success) {
-          logger.info(`Poll sent: ${pollResult.question}`);
+      if (publishedToday >= config.publishing.maxPostsPerDay) {
+        logger.info(`Kunlik limit yetdi (${publishedToday}/${config.publishing.maxPostsPerDay})`);
+      } else {
+        const schoolReady = hasSchoolArticleReady();
+        const youthSportReady = hasYouthSportArticleReady();
+
+        if (schoolReady) {
+          logger.info('✅ Maktab yangiligi topildi — nashr qilinmoqda...');
+          publishResult = await publishReadyArticles(1);
+        } else if (youthSportReady) {
+          logger.info('⚽ Maktab yangiligi yo\'q — yoshlar sport yangiligi nashr qilinmoqda...');
+          publishResult = await publishReadyArticles(1);
+        } else {
+          logger.info('💤 Bugun mos yangilik yo\'q — ertaga tekshiriladi');
         }
-      } catch (pollError) {
-        logger.error('Poll send error:', pollError.message);
+
+        if (publishResult.published > 0) {
+          logger.info(`✅ Nashr qilindi: ${publishResult.published} ta`);
+        }
       }
     }
-    
+
     collectionStats.successfulRuns++;
     isCollecting = false;
-    
+
     return {
       success: true,
       totalCollected,
@@ -194,23 +248,43 @@ export async function collectAndProcessArticles() {
     logger.error('Collection error:', error);
     collectionStats.failedRuns++;
 
-    // Update collection run as failed
     if (db && runId) {
-      const stmt = db.prepare(`
+      db.prepare(`
         UPDATE collection_runs 
-        SET completed_at = CURRENT_TIMESTAMP,
-            status = 'failed',
-            error_message = ?
+        SET completed_at = CURRENT_TIMESTAMP, status = 'failed', error_message = ?
         WHERE id = ?
-      `);
-      stmt.run(error.message, runId);
+      `).run(error.message, runId);
     }
-    
+
     isCollecting = false;
     return { success: false, error: error.message };
   }
 }
 
+// ================================================================
+// POLL — alohida cron, har 6 soatda tekshiradi (3 kunda bir yuboradi)
+// ================================================================
+function startPollScheduler() {
+  // Har 6 soatda bir tekshir — 72 soat (3 kun) o'tgan bo'lsa yuboradi
+  pollTask = cron.schedule('0 */6 * * *', async () => {
+    try {
+      if (shouldSendPoll()) {
+        logger.info('⏰ Poll vaqti keldi — yuborilmoqda...');
+        const result = await sendPollToChannel();
+        if (result.success) {
+          logger.info(`✅ Poll yuborildi: ${result.question}`);
+        }
+      }
+    } catch (e) {
+      logger.error('Poll cron xatosi:', e.message);
+    }
+  });
+  logger.info('Poll scheduler started (har 6 soatda tekshiradi, 3 kunda bir yuboradi)');
+}
+
+// ================================================================
+// Scheduler ishga tushirish
+// ================================================================
 export function startScheduler() {
   if (collectionTask) {
     logger.warn('Scheduler already running');
@@ -220,9 +294,8 @@ export function startScheduler() {
   const interval = config.publishing.collectionIntervalMinutes;
   logger.info(`Starting scheduler with ${interval} minute interval`);
 
-  // Run every N minutes
   const cronExpression = `*/${interval} * * * *`;
-  
+
   collectionTask = cron.schedule(cronExpression, async () => {
     logger.info('Scheduled collection triggered');
     lastCollectionTime = new Date();
@@ -230,12 +303,13 @@ export function startScheduler() {
     await collectAndProcessArticles();
   });
 
+  // Poll alohida scheduler
+  startPollScheduler();
+
   logger.info('Scheduler started successfully');
-  
-  // Calculate next run time
   nextScheduledTime = new Date(Date.now() + interval * 60 * 1000);
 
-  // Run initial collection after 10 seconds
+  // Birinchi collection 10 soniyadan keyin
   setTimeout(async () => {
     logger.info('Running initial collection...');
     lastCollectionTime = new Date();
@@ -258,8 +332,12 @@ export function stopScheduler() {
   if (collectionTask) {
     collectionTask.stop();
     collectionTask = null;
-    logger.info('Scheduler stopped');
   }
+  if (pollTask) {
+    pollTask.stop();
+    pollTask = null;
+  }
+  logger.info('Scheduler stopped');
 }
 
 export default {
