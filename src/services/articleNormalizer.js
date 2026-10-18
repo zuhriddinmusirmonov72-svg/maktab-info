@@ -67,20 +67,43 @@ export function updateArticleStatus(id, status) {
   return result.changes > 0;
 }
 
-export function getArticlesByStatus(status, limit = 50) {
+export function getArticlesByStatus(status, limit = 50, type = 'any') {
   const db = getDatabase();
   if (!db) return [];
 
-  const stmt = db.prepare(`
+  // Ta'lim kalit so'zlari — faqat shu articlelar publish qilinadi
+  const SCHOOL_KEYWORDS = [
+    'maktab', "o'quvchi", "o'qituvchi", 'sinf', 'imtihon',
+    "ta'lim", "ta'til", 'olimpiada', 'grant', 'stipendiya',
+    'dtm', 'qabul', 'kollej', 'universitet', 'talaba',
+    'мактаб', 'ўқувчи', 'ўқитувчи', 'имтиҳон', 'таълим',
+    'школа', 'ученик', 'учитель', 'образование', 'экзамен',
+    'каникулы', 'учебн', 'директор мактаб', 'синфхона',
+  ];
+
+  const YOUTH_SPORT_KEYWORDS = [
+    'yosh sportchi', 'yosh chempion', "o'quvchi medal",
+    'yoshlar sport', 'maktab jamoasi', 'yoshlar musobaqasi',
+    'ёш спортчи', 'ёшлар спорт', 'молодёжный спорт',
+  ];
+
+  const all = db.prepare(`
     SELECT a.*, s.name as source_name
     FROM articles a
     JOIN sources s ON a.source_id = s.id
     WHERE a.status = ?
-    ORDER BY a.relevance_score DESC, a.collected_at DESC
+    ORDER BY a.relevance_score DESC, a.collected_at ASC
     LIMIT ?
-  `);
+  `).all(status, limit * 5); // Ko'proq olib filtrlash
 
-  return stmt.all(status, limit);
+  // Ta'lim yoki yoshlar sport articlelarini tanlash
+  const filtered = all.filter(a => {
+    const text = `${a.title || ''} ${a.description || ''}`.toLowerCase();
+    const keywords = type === 'sport' ? YOUTH_SPORT_KEYWORDS : [...SCHOOL_KEYWORDS, ...YOUTH_SPORT_KEYWORDS];
+    return keywords.some(kw => text.includes(kw.toLowerCase()));
+  });
+
+  return filtered.slice(0, limit);
 }
 
 export function getRecentArticles(limit = 20) {
