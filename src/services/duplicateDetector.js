@@ -33,13 +33,14 @@ export function findSimilarArticles(title, threshold = null) {
       : config.publishing.similarityThreshold;
     const normalizedTitle = normalizeText(title);
 
+    // So'nggi 7 kun ichidagi barcha articlelar bilan solishtirish
     const candidates = db.prepare(`
       SELECT a.id, a.title, a.url, af.title_normalized
       FROM articles a
       JOIN article_fingerprints af ON a.id = af.article_id
-      WHERE a.collected_at > datetime('now', '-30 days')
+      WHERE a.collected_at > datetime('now', '-7 days')
       ORDER BY a.collected_at DESC
-      LIMIT 500
+      LIMIT 1000
     `).all();
 
     const similar = [];
@@ -56,16 +57,65 @@ export function findSimilarArticles(title, threshold = null) {
   }
 }
 
+// Mavzu bo'yicha duplicate tekshirish — kalit so'zlar orqali
+function hasSameTopic(title1, title2) {
+  const t1 = normalizeText(title1).toLowerCase();
+  const t2 = normalizeText(title2).toLowerCase();
+  
+  // Ta'til sanasi bir xil bo'lsa — bir xil yangilik
+  const datePattern = /\b(noyabr|oktyabr|sentabr|yanvar|fevral|mart|aprel|may|iyun|iyul|avgust|декабр|ноябр|октябр|сентябр)\b/gi;
+  const d1 = t1.match(datePattern) || [];
+  const d2 = t2.match(datePattern) || [];
+  if (d1.length > 0 && d2.length > 0) {
+    const commonDates = d1.filter(d => d2.some(d2i => d2i.toLowerCase() === d.toLowerCase()));
+    if (commonDates.length > 0) {
+      // Sonlarni ham tekshir (4-noyabr, 4 noyabr, etc.)
+      const numPattern = /\b(\d{1,2})\b/g;
+      const n1 = [...t1.matchAll(numPattern)].map(m => m[1]);
+      const n2 = [...t2.matchAll(numPattern)].map(m => m[1]);
+      const commonNums = n1.filter(n => n2.includes(n));
+      if (commonNums.length > 0) return true;
+    }
+  }
+  return false;
+}
+
 export function isDuplicate(article) {
   if (isDuplicateByUrl(article.url)) {
     logger.debug(`Duplicate by URL: ${article.url}`);
     return true;
   }
+  
+  // String similarity tekshiruvi
   const similar = findSimilarArticles(article.title);
   if (similar.length > 0) {
     logger.debug(`Duplicate by similarity (${similar[0].similarity.toFixed(2)}): ${article.title}`);
     return true;
   }
+  
+  // Bir xil mavzu (ta'til sanasi, raqam, oy) — boshqa tilda bo'lsa ham
+  if (article.title && article.title.length > 10) {
+    const db = getDatabase();
+    if (db) {
+      try {
+        const recentTitles = db.prepare(`
+          SELECT a.title FROM articles a
+          WHERE a.collected_at > datetime('now', '-3 days')
+          LIMIT 200
+        `).all();
+        
+        for (const row of recentTitles) {
+          if (hasSameTopic(article.title, row.title)) {
+            logger.debug(`Duplicate by topic match: "${article.title}" ~ "${row.title}"`);
+            return true;
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+  
   return false;
 }
 
