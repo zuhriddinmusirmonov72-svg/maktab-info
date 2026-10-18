@@ -129,6 +129,7 @@ export async function publishArticle(article, sourceName) {
   // Qayta publish tekshiruvi — bu article oldin publish qilinganmi?
   const db = getDatabase();
   if (db) {
+    // 1. Article ID bo'yicha tekshirish
     const alreadyPublished = db.prepare(
       'SELECT COUNT(*) as count FROM published_posts WHERE article_id = ?'
     ).get(article.id);
@@ -136,6 +137,32 @@ export async function publishArticle(article, sourceName) {
       logger.warn(`Article already published, skipping: ${article.title}`);
       updateArticleStatus(article.id, 'PUBLISHED');
       return { success: false, error: 'Already published' };
+    }
+
+    // 2. So'nggi 24 soatda shunga o'xshash mavzu nashr qilinganmi?
+    // Kalit so'zlarni sarlavhadan ajratib tekshirish
+    const titleWords = (article.title || '')
+      .toLowerCase()
+      .replace(/[^\wа-яёўқғҳ\s]/gi, '')
+      .split(/\s+/)
+      .filter(w => w.length > 4); // 4 harfdan uzun so'zlar
+
+    if (titleWords.length > 0) {
+      const recentPosts = db.prepare(`
+        SELECT post_text FROM published_posts
+        WHERE published_at >= datetime('now', '-24 hours')
+      `).all();
+
+      for (const post of recentPosts) {
+        const postText = (post.post_text || '').toLowerCase();
+        // 3 ta yoki undan ko'p kalit so'z mos kelsa — duplicate
+        const matchCount = titleWords.filter(w => postText.includes(w)).length;
+        if (matchCount >= 3) {
+          logger.warn(`DUPLICATE TOPIC (${matchCount} words match) — skipping: ${article.title}`);
+          updateArticleStatus(article.id, 'PUBLISHED'); // qayta kelmasin
+          return { success: false, error: 'Duplicate topic in last 24h' };
+        }
+      }
     }
   }
 
