@@ -1,0 +1,35 @@
+name: maktab-info-bot
+services:
+  - name: bot
+    type: worker
+    git:
+      repository: github.com/zuhriddinmusirmonov72-svg/maktab-info
+      branch: main
+    build:
+      buildpack:
+        build_command: npm install
+        run_command: node src/index.js
+    instance_type: nano
+    regions:
+      - fra
+    env:
+      - key: NODE_ENV
+        value: production
+      - key: PUBLISHING_ENABLED
+        value: "true"
+      - key: COLLECTION_INTERVAL_MINUTES
+        value: "5"
+      - key: MAX_POSTS_PER_HOUR
+        value: "12"
+      - key: MAX_POSTS_PER_DAY
+        value: "50"
+      - key: MIN_POST_INTERVAL_MINUTES
+        value: "5"
+      - key: DATABASE_PATH
+        value: ./data/maktab-info.db
+      - key: DEFAULT_LANGUAGE
+        value: uz
+      - key: TIMEZONE
+        value: Asia/Tashkent
+      - key: LOG_LEVEL
+        value: info

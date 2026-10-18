@@ -1,0 +1,32 @@
+app = "maktab-info-bot"
+primary_region = "fra"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  DATABASE_PATH = "/app/data/maktab-info.db"
+  PUBLISHING_ENABLED = "true"
+  COLLECTION_INTERVAL_MINUTES = "5"
+  MAX_POSTS_PER_HOUR = "12"
+  MAX_POSTS_PER_DAY = "50"
+  MIN_POST_INTERVAL_MINUTES = "5"
+  DEFAULT_LANGUAGE = "uz"
+  TIMEZONE = "Asia/Tashkent"
+  LOG_LEVEL = "info"
+
+[[mounts]]
+  source = "maktab_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = false
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
