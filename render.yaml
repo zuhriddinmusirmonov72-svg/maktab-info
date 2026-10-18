@@ -1,84 +1,38 @@
 services:
-  # MAKTAB INFO Bot
   - type: web
     name: maktab-info-bot
     env: node
     plan: free
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node src/index.js
     envVars:
       - key: NODE_ENV
         value: production
       - key: TELEGRAM_BOT_TOKEN
-        sync: false  # Set in Render dashboard
+        sync: false
       - key: TELEGRAM_CHANNEL_ID
-        sync: false  # Set in Render dashboard
+        sync: false
       - key: ADMIN_IDS
-        sync: false  # Set in Render dashboard
+        sync: false
+      - key: CONTACT_NOTIFY_ID
+        sync: false
       - key: PUBLISHING_ENABLED
-        value: false  # Set to true after testing
+        value: "true"
       - key: COLLECTION_INTERVAL_MINUTES
-        value: 60
-      - key: MAX_POSTS_PER_DAY
-        value: 5
+        value: "5"
       - key: MAX_POSTS_PER_RUN
-        value: 2
+        value: "1"
+      - key: MAX_POSTS_PER_HOUR
+        value: "12"
+      - key: MAX_POSTS_PER_DAY
+        value: "50"
       - key: MIN_POST_INTERVAL_MINUTES
-        value: 120
-      - key: MAX_ARTICLE_AGE_HOURS
-        value: 72
-      - key: SIMILARITY_THRESHOLD
-        value: 0.88
+        value: "5"
+      - key: DATABASE_PATH
+        value: ./data/maktab-info.db
+      - key: DEFAULT_LANGUAGE
+        value: uz
+      - key: TIMEZONE
+        value: Asia/Tashkent
       - key: LOG_LEVEL
         value: info
-      - key: DATABASE_PATH
-        value: /opt/render/project/data/maktab-info.db
-    
-    # Persistent disk for SQLite database
-    disk:
-      name: maktab-info-data
-      mountPath: /opt/render/project/data
-      sizeGB: 1
-
-# IMPORTANT NOTES FOR RENDER.COM DEPLOYMENT:
-#
-# 1. Free Tier Limitations:
-#    - Services sleep after 15 minutes of inactivity
-#    - 750 hours/month of runtime
-#    - Persistent disk requires paid plan
-#
-# 2. Setup Steps:
-#    a. Create new Web Service on Render
-#    b. Connect your Git repository
-#    c. Use this render.yaml configuration
-#    d. Add environment variables in dashboard:
-#       - TELEGRAM_BOT_TOKEN (from @BotFather)
-#       - TELEGRAM_CHANNEL_ID (your channel ID)
-#       - ADMIN_IDS (comma-separated user IDs)
-#    e. Deploy!
-#
-# 3. Database Persistence:
-#    - Free tier: Database resets on sleep
-#    - Paid tier: Add persistent disk (see config above)
-#    - Alternative: Use external PostgreSQL/MongoDB
-#
-# 4. Keeping Service Awake:
-#    - Free tier services sleep after inactivity
-#    - Consider external cron job to ping service
-#    - Or upgrade to paid tier for always-on
-#
-# 5. Scheduler Considerations:
-#    - Background cron jobs work while service is awake
-#    - If service sleeps, collections pause
-#    - Service wakes on HTTP request (needs webhook endpoint)
-#
-# 6. Production Recommendations:
-#    - Use paid tier for persistent storage
-#    - Consider dedicated server for 24/7 operation
-#    - Monitor service health regularly
-#
-# 7. Alternative Free Hosting:
-#    - Railway.app (limited free credits)
-#    - Fly.io (free tier available)
-#    - Heroku (no longer free)
-#    - Local Windows server (see README)

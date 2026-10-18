@@ -126,6 +126,19 @@ export async function publishArticle(article, sourceName) {
     return { success: true, dryRun: true };
   }
 
+  // Qayta publish tekshiruvi — bu article oldin publish qilinganmi?
+  const db = getDatabase();
+  if (db) {
+    const alreadyPublished = db.prepare(
+      'SELECT COUNT(*) as count FROM published_posts WHERE article_id = ?'
+    ).get(article.id);
+    if (alreadyPublished && alreadyPublished.count > 0) {
+      logger.warn(`Article already published, skipping: ${article.title}`);
+      updateArticleStatus(article.id, 'PUBLISHED');
+      return { success: false, error: 'Already published' };
+    }
+  }
+
   // Safety check
   if (!isSafeToPublish(article)) {
     logger.warn(`Article rejected by safety check: ${article.title}`);

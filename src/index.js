@@ -5,6 +5,7 @@ import { initializeSources } from './collectors/sourceRegistry.js';
 import { createBot, startBot, stopBot } from './bot.js';
 import { startScheduler, stopScheduler } from './scheduler.js';
 import { testChannelAccess } from './services/publisher.js';
+import { createServer } from 'http';
 
 async function main() {
   try {
@@ -61,6 +62,15 @@ async function main() {
 
     logger.info('=== MAKTAB INFO Bot Running ===');
     logger.info('Press Ctrl+C to stop');
+
+    // Render/hosting uchun minimal HTTP server — uxlamaslik uchun
+    const PORT = process.env.PORT || 3000;
+    createServer((req, res) => {
+      res.writeHead(200);
+      res.end('MAKTAB INFO bot ishlayapti ✅');
+    }).listen(PORT, () => {
+      logger.info(`Health check server: port ${PORT}`);
+    });
 
     // Handle uncaught errors
     process.on('uncaughtException', (error) => {
